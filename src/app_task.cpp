@@ -7,6 +7,7 @@
 #include "app_task.h"
 
 #define CONF_FLASH_SLEEP 1
+#define CONF_SUSPEND_CONSOLE 0
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -35,6 +36,10 @@ static const struct device *const flash_bus = DEVICE_DT_GET(DT_BUS(DT_NODELABEL(
 #endif
 #endif
 
+#if DT_NODE_EXISTS(DT_CHOSEN(zephyr_console))
+static const struct device *const cons = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+#endif
+
 LOG_MODULE_DECLARE(app, CONFIG_CHIP_APP_LOG_LEVEL);
 
 using namespace ::chip;
@@ -46,8 +51,8 @@ namespace
 constexpr chip::EndpointId kTemperatureSensorEndpointId = 1;
 constexpr chip::EndpointId kHumiditySensorEndpointId = 2;
 
-Nrf::Matter::IdentifyCluster sIdentifyCluster(kTemperatureSensorEndpointId);
-Nrf::Matter::IdentifyCluster sIdentifyCluster(kHumiditySensorEndpointId);
+Nrf::Matter::IdentifyCluster sIdentifyClusterTemperature(kTemperatureSensorEndpointId);
+Nrf::Matter::IdentifyCluster sIdentifyClusterHumidity(kHumiditySensorEndpointId);
 
 #ifdef CONFIG_CHIP_ICD_UAT_SUPPORT
 #ifdef CONFIG_NCS_SAMPLE_MATTER_USE_DEFAULT_BUTTON_HANDLER
@@ -166,10 +171,10 @@ void AppTask::UpdateMeasurement()
 			// First, get the temperature in 1/100ths of a degree.
 			int32_t tmp = sSensorValue.val1 * 100 + sSensorValue.val2 / 10000;
 			// Clamp to min..max
-			if (tmp < -30000) {
-				tmp = -30000;
-			} else if (tmp > +30000) {
-				tmp = +30000;
+			if (tmp < -2000) {
+				tmp = -2000;
+			} else if (tmp > +8500) {
+				tmp = +8500;
 			}
 #if 1
 			// Reduce precision to 1/10ths of a degree, with 0.01° hysteresis
@@ -206,7 +211,7 @@ void AppTask::UpdateMeasurement()
 #else
 			mCurrentHumidity = (int16_t)tmp;
 #endif			
-			LOG_DBG("New humidity measurement: %d.%06d *C, attribute value: %d", sSensorValue.val1,
+			LOG_DBG("New humidity measurement: %d.%06d %%, attribute value: %d", sSensorValue.val1,
 				sSensorValue.val2, mCurrentHumidity);
 
 		} else {
@@ -244,7 +249,7 @@ void AppTask::UpdateMeasurementTimeoutCallback(k_timer *timer)
 				LOG_ERR("Updating temperature measurement failed %x", to_underlying(statusT));
 			}
 			Protocols::InteractionModel::Status statusH =
-				Clusters::TemperatureMeasurement::Attributes::MeasuredValue::Set(
+				Clusters::RelativeHumidityMeasurement::Attributes::MeasuredValue::Set(
 					kHumiditySensorEndpointId, AppTask::Instance().GetCurrentHumidity());
 
 			if (statusH != Protocols::InteractionModel::Status::Success) {
@@ -344,15 +349,36 @@ static int suspend_external_flash(void)
 }
 #endif
 
+#if CONF_SUSPEND_CONSOLE
+static int suspend_console_best_effort(void)
+{
+#if DT_NODE_EXISTS(DT_CHOSEN(zephyr_console))
+	if (!device_is_ready(cons)) {
+		return -1;
+	}
+	int rc = pm_device_action_run(cons, PM_DEVICE_ACTION_SUSPEND);
+	if (rc < 0 && rc != -EALREADY) {
+		return rc;
+	}
+	return 0;
+#endif
+}
+#endif
+
 CHIP_ERROR AppTask::Init()
 {
 #if CONF_FLASH_SLEEP
 	int rc = suspend_external_flash();
 	if (rc < 0) {
-		LOG_WRN("Warning: flash low-power preparation incomplete (%d)\n", rc);
+		LOG_WRN("Warning: flash low-power preparation incomplete (%d)", rc);
 	}
 #endif
-
+#if CONF_SUSPEND_CONSOLE
+	rc = suspend_console_best_effort();
+	if (rc < 0) {
+		LOG_WRN("Warning: could not suspend console (%d)", rc);
+	}
+#endif
 	/* Initialize Matter stack */
 	ReturnErrorOnFailure(Nrf::Matter::PrepareServer());
 
@@ -372,7 +398,8 @@ CHIP_ERROR AppTask::Init()
 	pm_device_action_run(bme280_dev, PM_DEVICE_ACTION_SUSPEND);	
 #endif
 
-	ReturnErrorOnFailure(sIdentifyCluster.Init());
+	ReturnErrorOnFailure(sIdentifyClusterTemperature.Init());
+	ReturnErrorOnFailure(sIdentifyClusterHumidity.Init());
 
 	return Nrf::Matter::StartServer();
 }

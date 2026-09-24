@@ -1848,6 +1848,21 @@ cluster TemperatureMeasurement = 1026 {
   readonly attribute int16u clusterRevision = 65533;
 }
 
+/** Attributes and commands for configuring the measurement of relative humidity, and reporting relative humidity measurements. */
+cluster RelativeHumidityMeasurement = 1029 {
+  revision 3;
+
+  readonly attribute nullable int16u measuredValue = 0;
+  readonly attribute nullable int16u minMeasuredValue = 1;
+  readonly attribute nullable int16u maxMeasuredValue = 2;
+  readonly attribute optional int16u tolerance = 3;
+  readonly attribute command_id generatedCommandList[] = 65528;
+  readonly attribute command_id acceptedCommandList[] = 65529;
+  readonly attribute attrib_id attributeList[] = 65531;
+  readonly attribute bitmap32 featureMap = 65532;
+  readonly attribute int16u clusterRevision = 65533;
+}
+
 endpoint 0 {
   device type ma_rootdevice = 22, version 4;
   device type ma_otarequestor = 18, version 1;
@@ -1868,7 +1883,6 @@ endpoint 0 {
 
   server cluster AccessControl {
     callback attribute acl;
-    callback attribute extension;
     callback attribute subjectsPerAccessControlEntry;
     callback attribute targetsPerAccessControlEntry;
     callback attribute accessControlEntriesPerFabric;
@@ -1985,6 +1999,7 @@ endpoint 0 {
   }
 
   server cluster GeneralDiagnostics {
+    emits event BootReason;
     callback attribute networkInterfaces;
     callback attribute rebootCount;
     callback attribute upTime;
@@ -2186,6 +2201,7 @@ endpoint 1 {
     callback attribute clusterRevision;
 
     handle command Identify;
+    handle command TriggerEffect;
   }
 
   server cluster Descriptor {
@@ -2202,12 +2218,52 @@ endpoint 1 {
 
   server cluster TemperatureMeasurement {
     ram      attribute measuredValue;
-    ram      attribute minMeasuredValue default = -2000;
-    ram      attribute maxMeasuredValue default = 2000;
+    ram      attribute minMeasuredValue default = -4000;
+    ram      attribute maxMeasuredValue default = 8500;
     callback attribute generatedCommandList;
     callback attribute acceptedCommandList;
     callback attribute attributeList;
     ram      attribute featureMap default = 0;
     ram      attribute clusterRevision default = 4;
+  }
+}
+endpoint 2 {
+  device type ma_humiditysensor = 775, version 1;
+
+
+  server cluster Identify {
+    callback attribute identifyTime;
+    callback attribute identifyType;
+    callback attribute generatedCommandList;
+    callback attribute acceptedCommandList;
+    callback attribute attributeList;
+    callback attribute featureMap;
+    callback attribute clusterRevision;
+
+    handle command Identify;
+    handle command TriggerEffect;
+  }
+
+  server cluster Descriptor {
+    callback attribute deviceTypeList;
+    callback attribute serverList;
+    callback attribute clientList;
+    callback attribute partsList;
+    callback attribute generatedCommandList;
+    callback attribute acceptedCommandList;
+    callback attribute attributeList;
+    callback attribute featureMap;
+    callback attribute clusterRevision;
+  }
+
+  server cluster RelativeHumidityMeasurement {
+    ram      attribute measuredValue;
+    ram      attribute minMeasuredValue default = 0;
+    ram      attribute maxMeasuredValue default = 10000;
+    callback attribute generatedCommandList;
+    callback attribute acceptedCommandList;
+    callback attribute attributeList;
+    ram      attribute featureMap default = 0;
+    ram      attribute clusterRevision default = 3;
   }
 }
