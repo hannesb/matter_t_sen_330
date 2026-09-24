@@ -32,6 +32,7 @@ public:
 
 	int16_t GetCurrentTemperature() const { return mCurrentTemperature; }
 	int16_t GetCurrentHumidity() const { return mCurrentHumidity; }
+	int16_t GetCurrentMilliVolts() const { return mCurrentMilliVolts; }
 
 private:
 	CHIP_ERROR Init();
@@ -46,4 +47,6 @@ private:
 
 	int16_t mCurrentTemperature = 0;
 	int16_t mCurrentHumidity = 0;
+	int16_t mCurrentMilliVolts = 0;
+	int32_t mOldMicroVolts = 0;
 };

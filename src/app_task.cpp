@@ -54,9 +54,11 @@ namespace
 {
 constexpr chip::EndpointId kTemperatureSensorEndpointId = 1;
 constexpr chip::EndpointId kHumiditySensorEndpointId = 2;
+constexpr chip::EndpointId kPowerSourceEndpointId = 3;
 
-Nrf::Matter::IdentifyCluster sIdentifyClusterTemperature(kTemperatureSensorEndpointId);
-Nrf::Matter::IdentifyCluster sIdentifyClusterHumidity(kHumiditySensorEndpointId);
+Nrf::Matter::IdentifyCluster sIdentifyClusterTemperatureSensor(kTemperatureSensorEndpointId);
+Nrf::Matter::IdentifyCluster sIdentifyClusterHumiditySensor(kHumiditySensorEndpointId);
+Nrf::Matter::IdentifyCluster sIdentifyClusterPowerSource(kPowerSourceEndpointId);
 
 #ifdef CONFIG_CHIP_ICD_UAT_SUPPORT
 #ifdef CONFIG_NCS_SAMPLE_MATTER_USE_DEFAULT_BUTTON_HANDLER
@@ -230,29 +232,53 @@ void AppTask::UpdateMeasurement()
 	if (result_pm1300 != 0) {
 		LOG_ERR("Fetching data from pm1300 sensor failed with: %d", result_pm1300);
 	} else {
-		struct sensor_value volt;
-		struct sensor_value current;
-		struct sensor_value temp;
+		struct sensor_value sSensorVolt;
+		struct sensor_value sSensorCurrent;
+		struct sensor_value sSensorTemp;
 
-		const int resultV = sensor_channel_get(charger, SENSOR_CHAN_GAUGE_VOLTAGE, &volt);
+		const int resultV = sensor_channel_get(charger, SENSOR_CHAN_GAUGE_VOLTAGE, &sSensorVolt);
 		if (resultV != 0) {
 			LOG_ERR("Getting voltage measurement data from pm1300 failed with: %d", resultV);
 		} else {
-			LOG_DBG("V: %d.%03d ", volt.val1, volt.val2 / 1000);
+			int32_t microVolts = sSensorVolt.val1 * 1000000 + sSensorVolt.val2;
+			// Clamp to min..max
+			if (microVolts < 0) {
+				microVolts = 0;
+			} else if (microVolts > +10000000) {
+				microVolts = +10000000;
+			}
+			if (mOldMicroVolts == 0) {
+				mOldMicroVolts = microVolts;
+			} else {
+				// Smoothing filter
+				mOldMicroVolts = (90*mOldMicroVolts + 10*microVolts)/100;
+			}
+			int16_t milliVolts = (mOldMicroVolts + 500)/1000;
+#if 1
+			mCurrentMilliVolts = milliVolts;
+#else			
+			// Reduce precision to 10mV, with 6mV hysteresis
+			// If no change, no packet will be send
+			if (abs(mCurrentMilliVolts - milliVolts) >= 6) {
+				mCurrentMilliVolts = (int16_t)((milliVolts + 5) / 10) * 10;
+			}
+#endif			
+			LOG_DBG("New voltage measurement: %d.%06d V, attribute value: %d", sSensorVolt.val1,
+				sSensorVolt.val2, mCurrentMilliVolts);
 		}
-		const int resultI = sensor_channel_get(charger, SENSOR_CHAN_GAUGE_AVG_CURRENT, &current);
+		const int resultI = sensor_channel_get(charger, SENSOR_CHAN_GAUGE_AVG_CURRENT, &sSensorCurrent);
 		if (resultI != 0) {
 			LOG_ERR("Getting current measurement data from pm1300 failed with: %d", resultI);
 		} else {
-			LOG_DBG("I: %s%d.%04d ", ((current.val1 < 0) || (current.val2 < 0)) ? "-" : "",
-				abs(current.val1), abs(current.val2) / 100);
+			LOG_DBG("I: %s%d.%04d ", ((sSensorCurrent.val1 < 0) || (sSensorCurrent.val2 < 0)) ? "-" : "",
+				abs(sSensorCurrent.val1), abs(sSensorCurrent.val2) / 100);
 		}
-		const int resultT = sensor_channel_get(charger, SENSOR_CHAN_GAUGE_TEMP, &temp);
+		const int resultT = sensor_channel_get(charger, SENSOR_CHAN_GAUGE_TEMP, &sSensorTemp);
 		if (resultT != 0) {
 			LOG_ERR("Getting temperature measurement data from pm1300 failed with: %d", resultT);
 		} else {
-			LOG_DBG("T: %s%d.%02d\n", ((temp.val1 < 0) || (temp.val2 < 0)) ? "-" : "", abs(temp.val1),
-				abs(temp.val2) / 10000);
+			LOG_DBG("T: %s%d.%02d", ((sSensorTemp.val1 < 0) || (sSensorTemp.val2 < 0)) ? "-" : "", abs(sSensorTemp.val1),
+				abs(sSensorTemp.val2) / 10000);
 		}
 	}
 #else
@@ -288,6 +314,13 @@ void AppTask::UpdateMeasurementTimeoutCallback(k_timer *timer)
 
 			if (statusH != Protocols::InteractionModel::Status::Success) {
 				LOG_ERR("Updating humidity measurement failed %x", to_underlying(statusH));
+			}
+			Protocols::InteractionModel::Status statusV =
+				Clusters::PowerSource::Attributes::BatVoltage::Set(
+					kPowerSourceEndpointId, AppTask::Instance().GetCurrentMilliVolts());
+
+			if (statusH != Protocols::InteractionModel::Status::Success) {
+				LOG_ERR("Updating voltage measurement failed %x", to_underlying(statusV));
 			}
 		},
 		reinterpret_cast<intptr_t>(timer->user_data));
@@ -440,8 +473,9 @@ CHIP_ERROR AppTask::Init()
 		return chip::System::MapErrorZephyr(-ENODEV);
 	}
 
-	ReturnErrorOnFailure(sIdentifyClusterTemperature.Init());
-	ReturnErrorOnFailure(sIdentifyClusterHumidity.Init());
+	ReturnErrorOnFailure(sIdentifyClusterTemperatureSensor.Init());
+	ReturnErrorOnFailure(sIdentifyClusterHumiditySensor.Init());
+	ReturnErrorOnFailure(sIdentifyClusterPowerSource.Init());
 
 	return Nrf::Matter::StartServer();
 }

@@ -24,6 +24,7 @@ void MatterDescriptorPluginServerInitCallback();
 void MatterAccessControlPluginServerInitCallback();
 void MatterBasicInformationPluginServerInitCallback();
 void MatterOtaSoftwareUpdateRequestorPluginServerInitCallback();
+void MatterPowerSourcePluginServerInitCallback();
 void MatterGeneralCommissioningPluginServerInitCallback();
 void MatterNetworkCommissioningPluginServerInitCallback();
 void MatterDiagnosticLogsPluginServerInitCallback();
@@ -43,6 +44,7 @@ void MatterRelativeHumidityMeasurementPluginServerInitCallback();
   MatterAccessControlPluginServerInitCallback();                               \
   MatterBasicInformationPluginServerInitCallback();                            \
   MatterOtaSoftwareUpdateRequestorPluginServerInitCallback();                  \
+  MatterPowerSourcePluginServerInitCallback();                                 \
   MatterGeneralCommissioningPluginServerInitCallback();                        \
   MatterNetworkCommissioningPluginServerInitCallback();                        \
   MatterDiagnosticLogsPluginServerInitCallback();                              \
