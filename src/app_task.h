@@ -28,22 +28,22 @@ public:
 
 	/* Defined by cluster temperature measured value = 100 x temperature in degC with resolution of
 	 * 0.01 degC. */
-	void UpdateTemperatureMeasurement();
+	void UpdateMeasurement();
 
 	int16_t GetCurrentTemperature() const { return mCurrentTemperature; }
+	int16_t GetCurrentHumidity() const { return mCurrentHumidity; }
 
 private:
 	CHIP_ERROR Init();
 	k_timer mTimer;
 
-	static constexpr uint16_t kTemperatureMeasurementIntervalMs = 15000; /* 15 seconds */
-	static constexpr uint16_t kTemperatureMeasurementStep = 100; /* 1 degree Celsius */
+	static constexpr uint16_t kMeasurementIntervalMs = 15000; /* 15 seconds */
+	static constexpr uint16_t kMeasurementStep = 100; /* 1 degree Celsius */
 
-	static void UpdateTemperatureTimeoutCallback(k_timer *timer);
+	static void UpdateMeasurementTimeoutCallback(k_timer *timer);
 
 	static void ButtonEventHandler(Nrf::ButtonState state, Nrf::ButtonMask hasChanged);
 
-	int16_t mTemperatureSensorMaxValue = 0;
-	int16_t mTemperatureSensorMinValue = 0;
 	int16_t mCurrentTemperature = 0;
+	int16_t mCurrentHumidity = 0;
 };

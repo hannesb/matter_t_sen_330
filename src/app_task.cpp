@@ -6,6 +6,14 @@
 
 #include "app_task.h"
 
+#define CONF_FLASH_SLEEP 1
+
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/pm/device.h>
+#include <zephyr/logging/log.h>
+
 #include "app/matter_init.h"
 #include "app/task_executor.h"
 #include "board/board.h"
@@ -14,12 +22,17 @@
 
 #include <app-common/zap-generated/attributes/Accessors.h>
 
-#include <zephyr/logging/log.h>
-
-#ifdef CONFIG_BME680
+#ifdef CONFIG_BME280
 #include <zephyr/drivers/sensor.h>
 
-const device *sBme688SensorDev = DEVICE_DT_GET_ONE(bosch_bme680);
+static const struct device *const bme280_dev = DEVICE_DT_GET_ANY(bosch_bme280);
+#endif
+
+#if CONF_FLASH_SLEEP
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(py25q64), okay)
+static const struct device *const flash_dev = DEVICE_DT_GET(DT_NODELABEL(py25q64));
+static const struct device *const flash_bus = DEVICE_DT_GET(DT_BUS(DT_NODELABEL(py25q64)));
+#endif
 #endif
 
 LOG_MODULE_DECLARE(app, CONFIG_CHIP_APP_LOG_LEVEL);
@@ -31,8 +44,10 @@ using namespace ::chip::DeviceLayer;
 namespace
 {
 constexpr chip::EndpointId kTemperatureSensorEndpointId = 1;
+constexpr chip::EndpointId kHumiditySensorEndpointId = 2;
 
 Nrf::Matter::IdentifyCluster sIdentifyCluster(kTemperatureSensorEndpointId);
+Nrf::Matter::IdentifyCluster sIdentifyCluster(kHumiditySensorEndpointId);
 
 #ifdef CONFIG_CHIP_ICD_UAT_SUPPORT
 #ifdef CONFIG_NCS_SAMPLE_MATTER_USE_DEFAULT_BUTTON_HANDLER
@@ -136,26 +151,71 @@ void ButtonTimerTimeoutCallback(k_timer *timer)
 
 #endif
 
-void AppTask::UpdateTemperatureMeasurement()
+void AppTask::UpdateMeasurement()
 {
-#ifdef CONFIG_BME680
+#ifdef CONFIG_BME280
 	/* Real data from the onboard sensor*/
-	int result = sensor_sample_fetch(sBme688SensorDev);
-	if (result == 0) {
-		sensor_value temperature;
-		int result = sensor_channel_get(sBme688SensorDev, SENSOR_CHAN_AMBIENT_TEMP, &temperature);
-		if (result == 0) {
-			/* Defined by cluster temperature measured value = 100 x temperature in degC with resolution of
-			 * 0.01 degC. val1 is an integer part of the value and val2 is fractional part in one-millionth
-			 * parts. To achieve resolution of 0.01 degC val2 needs to be divided by 10000. */
-			mCurrentTemperature = static_cast<int16_t>(temperature.val1 * 100 + temperature.val2 / 10000);
-			LOG_DBG("New temperature measurement %d.%d *C", temperature.val1, temperature.val2);
+	pm_device_action_run(bme280_dev, PM_DEVICE_ACTION_RESUME);
+	const int result_bme = sensor_sample_fetch(bme280_dev);
+
+	if (result_bme == 0) {
+		struct sensor_value sSensorValue;
+		int resultT = sensor_channel_get(bme280_dev, SENSOR_CHAN_AMBIENT_TEMP, &sSensorValue);
+		if (resultT == 0) {
+			// The MeasuredValue attribute is in 1/100ths of a degree Celsius.
+			// First, get the temperature in 1/100ths of a degree.
+			int32_t tmp = sSensorValue.val1 * 100 + sSensorValue.val2 / 10000;
+			// Clamp to min..max
+			if (tmp < -30000) {
+				tmp = -30000;
+			} else if (tmp > +30000) {
+				tmp = +30000;
+			}
+#if 1
+			// Reduce precision to 1/10ths of a degree, with 0.01° hysteresis
+			// If no change, no packet will be send
+			if (abs(mCurrentTemperature - tmp) >= 6) {
+				mCurrentTemperature = (int16_t)((tmp + 5) / 10) * 10;
+			}
+#else
+			mCurrentTemperature = (int16_t)tmp;
+#endif			
+			LOG_DBG("New temperature measurement: %d.%06d *C, attribute value: %d", sSensorValue.val1,
+				sSensorValue.val2, mCurrentTemperature);
+
 		} else {
-			LOG_ERR("Getting temperature measurement data from BME688 failed with: %d", result);
+			LOG_ERR("Getting temperature measurement data from BME280 failed with: %d", resultT);
+		}
+		int resultH = sensor_channel_get(bme280_dev, SENSOR_CHAN_HUMIDITY, &sSensorValue);
+		if (resultH == 0) {
+			// The MeasuredValue attribute is in 1/100ths percent.
+			// First, get the temperature in 1/100ths percent.
+			int32_t tmp = sSensorValue.val1 * 100 + sSensorValue.val2 / 10000;
+			// Clamp to min..max
+			if (tmp < 0) {
+				tmp = 0;
+			} else if (tmp > +10000) {
+				tmp = +10000;
+			}
+#if 1
+			// Reduce precision to percent, with 0.1% hysteresis
+			// If no change, no packet will be send
+			if (abs(mCurrentHumidity - tmp) >= 60) {
+				mCurrentHumidity = (int16_t)((tmp + 50) / 100) * 100;
+			}
+#else
+			mCurrentHumidity = (int16_t)tmp;
+#endif			
+			LOG_DBG("New humidity measurement: %d.%06d *C, attribute value: %d", sSensorValue.val1,
+				sSensorValue.val2, mCurrentHumidity);
+
+		} else {
+			LOG_ERR("Getting humidity measurement data from BME280 failed with: %d", resultH);
 		}
 	} else {
-		LOG_ERR("Fetching data from BME688 sensor failed with: %d", result);
+		LOG_ERR("Fetching data from bme280 sensor failed with: %d", result_bme);
 	}
+	pm_device_action_run(bme280_dev, PM_DEVICE_ACTION_SUSPEND);
 #else
 	/* Linear temperature increase that is wrapped around to min value after reaching the max value. */
 	if (mCurrentTemperature < mTemperatureSensorMaxValue) {
@@ -166,7 +226,7 @@ void AppTask::UpdateTemperatureMeasurement()
 #endif
 }
 
-void AppTask::UpdateTemperatureTimeoutCallback(k_timer *timer)
+void AppTask::UpdateMeasurementTimeoutCallback(k_timer *timer)
 {
 	if (!timer || !timer->user_data) {
 		return;
@@ -174,21 +234,125 @@ void AppTask::UpdateTemperatureTimeoutCallback(k_timer *timer)
 
 	DeviceLayer::PlatformMgr().ScheduleWork(
 		[](intptr_t p) {
-			AppTask::Instance().UpdateTemperatureMeasurement();
+			AppTask::Instance().UpdateMeasurement();
 
-			Protocols::InteractionModel::Status status =
+			Protocols::InteractionModel::Status statusT =
 				Clusters::TemperatureMeasurement::Attributes::MeasuredValue::Set(
 					kTemperatureSensorEndpointId, AppTask::Instance().GetCurrentTemperature());
 
-			if (status != Protocols::InteractionModel::Status::Success) {
-				LOG_ERR("Updating temperature measurement failed %x", to_underlying(status));
+			if (statusT != Protocols::InteractionModel::Status::Success) {
+				LOG_ERR("Updating temperature measurement failed %x", to_underlying(statusT));
+			}
+			Protocols::InteractionModel::Status statusH =
+				Clusters::TemperatureMeasurement::Attributes::MeasuredValue::Set(
+					kHumiditySensorEndpointId, AppTask::Instance().GetCurrentHumidity());
+
+			if (statusH != Protocols::InteractionModel::Status::Success) {
+				LOG_ERR("Updating humidity measurement failed %x", to_underlying(statusH));
 			}
 		},
 		reinterpret_cast<intptr_t>(timer->user_data));
 }
 
+#if CONF_FLASH_SLEEP
+/*
+ * Put the external flash pins into deterministic, low-leakage states before
+ * System OFF. These pin numbers are confirmed by the board pinctrl and DTS.
+ */
+static int configure_spi_pins_for_system_off(void)
+{
+	const struct device *gpio2 = DEVICE_DT_GET(DT_NODELABEL(gpio2));
+	int rc;
+
+	if (!device_is_ready(gpio2)) {
+		LOG_ERR("GPIO2 not ready.");
+		return -ENODEV;
+	}
+
+	rc = gpio_pin_configure(gpio2, 5, GPIO_OUTPUT_HIGH);
+	if (rc < 0) {
+		return rc;
+	}
+
+	rc = gpio_pin_configure(gpio2, 0, GPIO_OUTPUT_HIGH);
+	if (rc < 0) {
+		return rc;
+	}
+
+	rc = gpio_pin_configure(gpio2, 3, GPIO_OUTPUT_HIGH);
+	if (rc < 0) {
+		return rc;
+	}
+
+	rc = gpio_pin_configure(gpio2, 1, GPIO_OUTPUT_LOW);
+	if (rc < 0) {
+		return rc;
+	}
+
+	rc = gpio_pin_configure(gpio2, 2, GPIO_OUTPUT_LOW);
+	if (rc < 0) {
+		return rc;
+	}
+
+	rc = gpio_pin_configure(gpio2, 4, GPIO_INPUT | GPIO_PULL_DOWN);
+	if (rc < 0) {
+		return rc;
+	}
+
+	return 0;
+}
+
+static int suspend_external_flash(void)
+{
+	int first_error = 0;
+	int rc;
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(py25q64), okay)
+	if (device_is_ready(flash_dev)) {
+		rc = pm_device_action_run(flash_dev, PM_DEVICE_ACTION_SUSPEND);
+		if ((rc < 0) && (first_error == 0) && rc != -EALREADY) {
+			first_error = rc;
+			LOG_WRN("Warning: could not suspend external flash (%d)", rc);
+		}
+	} else {
+		first_error = -ENODEV;
+		LOG_WRN("Warning: flash device is not ready; skipping driver DPD.");
+	}
+
+	if (device_is_ready(flash_bus)) {
+		rc = pm_device_action_run(flash_bus, PM_DEVICE_ACTION_SUSPEND);
+		if ((rc < 0) && (first_error == 0) && rc != -EALREADY) {
+			first_error = rc;
+			LOG_WRN("Warning: could not suspend SPI bus (%d)", rc);
+		}
+	} else if (first_error == 0) {
+		first_error = -ENODEV;
+		LOG_WRN("Warning: flash SPI bus is not ready.");
+	}
+#else
+	first_error = -ENODEV;
+	LOG_WRN("Warning: py25q64 is not enabled in DTS.");
+#endif
+
+	rc = configure_spi_pins_for_system_off();
+	if ((rc < 0) && (first_error == 0)) {
+		first_error = rc;
+		LOG_WRN("Warning: could not configure flash SPI pins (%d)", rc);
+	}
+
+	return first_error;
+}
+#endif
+
 CHIP_ERROR AppTask::Init()
 {
+#if CONF_FLASH_SLEEP
+	int rc = suspend_external_flash();
+	if (rc < 0) {
+		LOG_WRN("Warning: flash low-power preparation incomplete (%d)\n", rc);
+	}
+#endif
+
 	/* Initialize Matter stack */
 	ReturnErrorOnFailure(Nrf::Matter::PrepareServer());
 
@@ -200,11 +364,12 @@ CHIP_ERROR AppTask::Init()
 	/* Register Matter event handler that controls the connectivity status LED based on the captured Matter network
 	 * state. */
 	ReturnErrorOnFailure(Nrf::Matter::RegisterEventHandler(Nrf::Board::DefaultMatterEventHandler, 0));
-#ifdef CONFIG_BME680
-	if (!device_is_ready(sBme688SensorDev)) {
-		LOG_ERR("BME688 sensor device not ready");
+#ifdef CONFIG_BME280
+	if (!device_is_ready(bme280_dev)) {
+		LOG_ERR("BME280 sensor device not ready");
 		return chip::System::MapErrorZephyr(-ENODEV);
 	}
+	pm_device_action_run(bme280_dev, PM_DEVICE_ACTION_SUSPEND);	
 #endif
 
 	ReturnErrorOnFailure(sIdentifyCluster.Init());
@@ -215,7 +380,7 @@ CHIP_ERROR AppTask::Init()
 CHIP_ERROR AppTask::StartApp()
 {
 	ReturnErrorOnFailure(Init());
-
+#if 0
 	DataModel::Nullable<int16_t> val;
 	Protocols::InteractionModel::Status status =
 		Clusters::TemperatureMeasurement::Attributes::MinMeasuredValue::Get(kTemperatureSensorEndpointId, val);
@@ -235,10 +400,10 @@ CHIP_ERROR AppTask::StartApp()
 	}
 
 	mTemperatureSensorMaxValue = val.Value();
-
-	k_timer_init(&mTimer, AppTask::UpdateTemperatureTimeoutCallback, nullptr);
+#endif
+	k_timer_init(&mTimer, AppTask::UpdateMeasurementTimeoutCallback, nullptr);
 	k_timer_user_data_set(&mTimer, this);
-	k_timer_start(&mTimer, K_MSEC(kTemperatureMeasurementIntervalMs), K_MSEC(kTemperatureMeasurementIntervalMs));
+	k_timer_start(&mTimer, K_MSEC(kMeasurementIntervalMs), K_MSEC(kMeasurementIntervalMs));
 #ifndef CONFIG_NCS_SAMPLE_MATTER_USE_DEFAULT_BUTTON_HANDLER
 	k_timer_init(&sBtn1Timer, &ButtonTimerTimeoutCallback, nullptr);
 #endif

@@ -5,6 +5,9 @@
  */
 
 / {
+	chosen {
+		nordic,pm-ext-flash = &py25q64;
+	};
 	aliases {
 		/* Use watchdog wdt31 as the application watchdog */
 		watchdog0 = &wdt31;
@@ -12,9 +15,19 @@
 };
 
 &py25q64 {
-	status = "disabled";
+	status = "okay";
 };
 
 &wdt31 {
 	status = "okay";
+};
+
+&i2c22 {
+	status = "okay";
+	compatible = "nordic,nrf-twim";
+
+	bme280@76 {
+		compatible = "bosch,bme280";
+		reg = <0x76>;
+	};
 };
