@@ -9,9 +9,11 @@
 #define CONF_FLASH_SLEEP 1
 #define CONF_SUSPEND_CONSOLE 0
 
+#include <zephyr/logging/log.h>
 #include <zephyr/kernel.h>
-#include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/sensor.h>
+#include <zephyr/device.h>
 #include <zephyr/pm/device.h>
 #include <zephyr/logging/log.h>
 
@@ -24,7 +26,6 @@
 #include <app-common/zap-generated/attributes/Accessors.h>
 
 #ifdef CONFIG_BME280
-#include <zephyr/drivers/sensor.h>
 
 static const struct device *const bme280_dev = DEVICE_DT_GET_ANY(bosch_bme280);
 #endif
@@ -39,6 +40,9 @@ static const struct device *const flash_bus = DEVICE_DT_GET(DT_BUS(DT_NODELABEL(
 #if DT_NODE_EXISTS(DT_CHOSEN(zephyr_console))
 static const struct device *const cons = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 #endif
+
+static const struct device *pmic = DEVICE_DT_GET(DT_NODELABEL(pmic));
+static const struct device *charger = DEVICE_DT_GET(DT_NODELABEL(pmic_charger));
 
 LOG_MODULE_DECLARE(app, CONFIG_CHIP_APP_LOG_LEVEL);
 
@@ -163,10 +167,14 @@ void AppTask::UpdateMeasurement()
 	pm_device_action_run(bme280_dev, PM_DEVICE_ACTION_RESUME);
 	const int result_bme = sensor_sample_fetch(bme280_dev);
 
-	if (result_bme == 0) {
+	if (result_bme != 0) {
+		LOG_ERR("Fetching data from bme280 sensor failed with: %d", result_bme);
+	} else {
 		struct sensor_value sSensorValue;
-		int resultT = sensor_channel_get(bme280_dev, SENSOR_CHAN_AMBIENT_TEMP, &sSensorValue);
-		if (resultT == 0) {
+		const int resultT = sensor_channel_get(bme280_dev, SENSOR_CHAN_AMBIENT_TEMP, &sSensorValue);
+		if (resultT != 0) {
+			LOG_ERR("Getting temperature measurement data from BME280 failed with: %d", resultT);
+		} else {
 			// The MeasuredValue attribute is in 1/100ths of a degree Celsius.
 			// First, get the temperature in 1/100ths of a degree.
 			int32_t tmp = sSensorValue.val1 * 100 + sSensorValue.val2 / 10000;
@@ -188,11 +196,11 @@ void AppTask::UpdateMeasurement()
 			LOG_DBG("New temperature measurement: %d.%06d *C, attribute value: %d", sSensorValue.val1,
 				sSensorValue.val2, mCurrentTemperature);
 
-		} else {
-			LOG_ERR("Getting temperature measurement data from BME280 failed with: %d", resultT);
 		}
-		int resultH = sensor_channel_get(bme280_dev, SENSOR_CHAN_HUMIDITY, &sSensorValue);
-		if (resultH == 0) {
+		const int resultH = sensor_channel_get(bme280_dev, SENSOR_CHAN_HUMIDITY, &sSensorValue);
+		if (resultH != 0) {
+			LOG_ERR("Getting humidity measurement data from BME280 failed with: %d", resultH);
+		} else {
 			// The MeasuredValue attribute is in 1/100ths percent.
 			// First, get the temperature in 1/100ths percent.
 			int32_t tmp = sSensorValue.val1 * 100 + sSensorValue.val2 / 10000;
@@ -214,13 +222,39 @@ void AppTask::UpdateMeasurement()
 			LOG_DBG("New humidity measurement: %d.%06d %%, attribute value: %d", sSensorValue.val1,
 				sSensorValue.val2, mCurrentHumidity);
 
-		} else {
-			LOG_ERR("Getting humidity measurement data from BME280 failed with: %d", resultH);
 		}
-	} else {
-		LOG_ERR("Fetching data from bme280 sensor failed with: %d", result_bme);
 	}
 	pm_device_action_run(bme280_dev, PM_DEVICE_ACTION_SUSPEND);
+
+	const int result_pm1300 = sensor_sample_fetch(charger);
+	if (result_pm1300 != 0) {
+		LOG_ERR("Fetching data from pm1300 sensor failed with: %d", result_pm1300);
+	} else {
+		struct sensor_value volt;
+		struct sensor_value current;
+		struct sensor_value temp;
+
+		const int resultV = sensor_channel_get(charger, SENSOR_CHAN_GAUGE_VOLTAGE, &volt);
+		if (resultV != 0) {
+			LOG_ERR("Getting voltage measurement data from pm1300 failed with: %d", resultV);
+		} else {
+			LOG_DBG("V: %d.%03d ", volt.val1, volt.val2 / 1000);
+		}
+		const int resultI = sensor_channel_get(charger, SENSOR_CHAN_GAUGE_AVG_CURRENT, &current);
+		if (resultI != 0) {
+			LOG_ERR("Getting current measurement data from pm1300 failed with: %d", resultI);
+		} else {
+			LOG_DBG("I: %s%d.%04d ", ((current.val1 < 0) || (current.val2 < 0)) ? "-" : "",
+				abs(current.val1), abs(current.val2) / 100);
+		}
+		const int resultT = sensor_channel_get(charger, SENSOR_CHAN_GAUGE_TEMP, &temp);
+		if (resultT != 0) {
+			LOG_ERR("Getting temperature measurement data from pm1300 failed with: %d", resultT);
+		} else {
+			LOG_DBG("T: %s%d.%02d\n", ((temp.val1 < 0) || (temp.val2 < 0)) ? "-" : "", abs(temp.val1),
+				abs(temp.val2) / 10000);
+		}
+	}
 #else
 	/* Linear temperature increase that is wrapped around to min value after reaching the max value. */
 	if (mCurrentTemperature < mTemperatureSensorMaxValue) {
@@ -397,6 +431,14 @@ CHIP_ERROR AppTask::Init()
 	}
 	pm_device_action_run(bme280_dev, PM_DEVICE_ACTION_SUSPEND);	
 #endif
+	if (!device_is_ready(pmic)) {
+		LOG_ERR("Pmic device not ready.\n");
+		return chip::System::MapErrorZephyr(-ENODEV);
+	}
+	if (!device_is_ready(charger)) {
+		LOG_ERR("pm1300 charger device not ready.");
+		return chip::System::MapErrorZephyr(-ENODEV);
+	}
 
 	ReturnErrorOnFailure(sIdentifyClusterTemperature.Init());
 	ReturnErrorOnFailure(sIdentifyClusterHumidity.Init());

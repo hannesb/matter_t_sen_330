@@ -31,3 +31,9 @@
 		reg = <0x76>;
 	};
 };
+
+/*
+&pmic_charger {
+	status = "okay";
+};
+*/
