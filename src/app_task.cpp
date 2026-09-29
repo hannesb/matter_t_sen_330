@@ -6,9 +6,6 @@
 
 #include "app_task.h"
 
-#define CONF_FLASH_SLEEP 1
-#define CONF_SUSPEND_CONSOLE 0
-
 #include <zephyr/logging/log.h>
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
@@ -30,15 +27,9 @@
 static const struct device *const bme280_dev = DEVICE_DT_GET_ANY(bosch_bme280);
 #endif
 
-#if CONF_FLASH_SLEEP
 #if DT_NODE_HAS_STATUS(DT_NODELABEL(py25q64), okay)
 static const struct device *const flash_dev = DEVICE_DT_GET(DT_NODELABEL(py25q64));
 static const struct device *const flash_bus = DEVICE_DT_GET(DT_BUS(DT_NODELABEL(py25q64)));
-#endif
-#endif
-
-#if DT_NODE_EXISTS(DT_CHOSEN(zephyr_console))
-static const struct device *const cons = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 #endif
 
 static const struct device *pmic = DEVICE_DT_GET(DT_NODELABEL(pmic));
@@ -181,10 +172,10 @@ void AppTask::UpdateMeasurement()
 			// First, get the temperature in 1/100ths of a degree.
 			int32_t tmp = sSensorValue.val1 * 100 + sSensorValue.val2 / 10000;
 			// Clamp to min..max
-			if (tmp < -2000) {
-				tmp = -2000;
-			} else if (tmp > +8500) {
-				tmp = +8500;
+			if (tmp < mTemperatureSensorMinValue) {
+				tmp = mTemperatureSensorMinValue;
+			} else if (tmp > mTemperatureSensorMaxValue) {
+				tmp = mTemperatureSensorMaxValue;
 			}
 #if 1
 			// Reduce precision to 1/10ths of a degree, with 0.01° hysteresis
@@ -206,7 +197,7 @@ void AppTask::UpdateMeasurement()
 			// The MeasuredValue attribute is in 1/100ths percent.
 			// First, get the temperature in 1/100ths percent.
 			int32_t tmp = sSensorValue.val1 * 100 + sSensorValue.val2 / 10000;
-			// Clamp to min..max
+			// Clamp to 0..100%
 			if (tmp < 0) {
 				tmp = 0;
 			} else if (tmp > +10000) {
@@ -241,7 +232,7 @@ void AppTask::UpdateMeasurement()
 			LOG_ERR("Getting voltage measurement data from pm1300 failed with: %d", resultV);
 		} else {
 			int32_t microVolts = sSensorVolt.val1 * 1000000 + sSensorVolt.val2;
-			// Clamp to min..max
+			// Clamp to 0..10V
 			if (microVolts < 0) {
 				microVolts = 0;
 			} else if (microVolts > +10000000) {
@@ -251,17 +242,17 @@ void AppTask::UpdateMeasurement()
 				mOldMicroVolts = microVolts;
 			} else {
 				// Smoothing filter
-				mOldMicroVolts = (90*mOldMicroVolts + 10*microVolts)/100;
+				mOldMicroVolts = (90*mOldMicroVolts + 10*microVolts + 50)/100;
 			}
 			int16_t milliVolts = (mOldMicroVolts + 500)/1000;
 #if 1
-			mCurrentMilliVolts = milliVolts;
-#else			
 			// Reduce precision to 10mV, with 6mV hysteresis
 			// If no change, no packet will be send
 			if (abs(mCurrentMilliVolts - milliVolts) >= 6) {
 				mCurrentMilliVolts = (int16_t)((milliVolts + 5) / 10) * 10;
 			}
+#else			
+			mCurrentMilliVolts = milliVolts;
 #endif			
 			LOG_DBG("New voltage measurement: %d.%06d V, attribute value: %d", sSensorVolt.val1,
 				sSensorVolt.val2, mCurrentMilliVolts);
@@ -326,7 +317,7 @@ void AppTask::UpdateMeasurementTimeoutCallback(k_timer *timer)
 		reinterpret_cast<intptr_t>(timer->user_data));
 }
 
-#if CONF_FLASH_SLEEP
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(py25q64), okay)
 /*
  * Put the external flash pins into deterministic, low-leakage states before
  * System OFF. These pin numbers are confirmed by the board pinctrl and DTS.
@@ -379,7 +370,6 @@ static int suspend_external_flash(void)
 	int first_error = 0;
 	int rc;
 
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(py25q64), okay)
 	if (device_is_ready(flash_dev)) {
 		rc = pm_device_action_run(flash_dev, PM_DEVICE_ACTION_SUSPEND);
 		if ((rc < 0) && (first_error == 0) && rc != -EALREADY) {
@@ -401,11 +391,6 @@ static int suspend_external_flash(void)
 		first_error = -ENODEV;
 		LOG_WRN("Warning: flash SPI bus is not ready.");
 	}
-#else
-	first_error = -ENODEV;
-	LOG_WRN("Warning: py25q64 is not enabled in DTS.");
-#endif
-
 	rc = configure_spi_pins_for_system_off();
 	if ((rc < 0) && (first_error == 0)) {
 		first_error = rc;
@@ -416,34 +401,12 @@ static int suspend_external_flash(void)
 }
 #endif
 
-#if CONF_SUSPEND_CONSOLE
-static int suspend_console_best_effort(void)
-{
-#if DT_NODE_EXISTS(DT_CHOSEN(zephyr_console))
-	if (!device_is_ready(cons)) {
-		return -1;
-	}
-	int rc = pm_device_action_run(cons, PM_DEVICE_ACTION_SUSPEND);
-	if (rc < 0 && rc != -EALREADY) {
-		return rc;
-	}
-	return 0;
-#endif
-}
-#endif
-
 CHIP_ERROR AppTask::Init()
 {
-#if CONF_FLASH_SLEEP
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(py25q64), okay)
 	int rc = suspend_external_flash();
 	if (rc < 0) {
 		LOG_WRN("Warning: flash low-power preparation incomplete (%d)", rc);
-	}
-#endif
-#if CONF_SUSPEND_CONSOLE
-	rc = suspend_console_best_effort();
-	if (rc < 0) {
-		LOG_WRN("Warning: could not suspend console (%d)", rc);
 	}
 #endif
 	/* Initialize Matter stack */
@@ -483,7 +446,7 @@ CHIP_ERROR AppTask::Init()
 CHIP_ERROR AppTask::StartApp()
 {
 	ReturnErrorOnFailure(Init());
-#if 0
+
 	DataModel::Nullable<int16_t> val;
 	Protocols::InteractionModel::Status status =
 		Clusters::TemperatureMeasurement::Attributes::MinMeasuredValue::Get(kTemperatureSensorEndpointId, val);
@@ -503,7 +466,7 @@ CHIP_ERROR AppTask::StartApp()
 	}
 
 	mTemperatureSensorMaxValue = val.Value();
-#endif
+
 	k_timer_init(&mTimer, AppTask::UpdateMeasurementTimeoutCallback, nullptr);
 	k_timer_user_data_set(&mTimer, this);
 	k_timer_start(&mTimer, K_MSEC(kMeasurementIntervalMs), K_MSEC(kMeasurementIntervalMs));

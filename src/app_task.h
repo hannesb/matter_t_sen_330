@@ -49,4 +49,6 @@ private:
 	int16_t mCurrentHumidity = 0;
 	int16_t mCurrentMilliVolts = 0;
 	int32_t mOldMicroVolts = 0;
+	int16_t mTemperatureSensorMinValue = 0;
+	int16_t mTemperatureSensorMaxValue = 0;
 };

@@ -32,8 +32,3 @@
 	};
 };
 
-/*
-&pmic_charger {
-	status = "okay";
-};
-*/
